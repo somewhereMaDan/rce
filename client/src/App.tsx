@@ -1,6 +1,5 @@
 import Editor from "@monaco-editor/react";
-import axios from "axios";
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 type Language = "python" | "java" | "cpp";
 
@@ -41,7 +40,7 @@ const LANGS: Record<Language, LangConfig> = {
 };
 
 type OutputStatus = "idle" | "running" | "success" | "error";
-interface OutputLine { text: string; type: "stdout" | "stderr" | "system"; }
+interface OutputLine { text: string; type: "stdout" | "stderr" | "system" | "stdin"; }
 
 export default function App() {
   const [lang, setLang] = useState<Language>("python");
@@ -54,6 +53,12 @@ export default function App() {
   const [runTime, setRunTime] = useState<number | null>(null);
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const startTime = useRef<number>(0)
+  const wsRef = useRef<WebSocket | null>(null)
+
+  const [inputValue, setInputValue] = useState('')
+  const [waitingForInput, setWaitingForInput] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const cfg = LANGS[lang];
 
@@ -64,34 +69,64 @@ export default function App() {
     setOutputLines([{ text: "// Output will appear here after running your code", type: "system" }]);
   };
 
+  useEffect(() => {
+    wsRef.current = new WebSocket('ws://localhost:5000')
+
+    wsRef.current.onmessage = (event) => {
+      const { type, data, code } = JSON.parse(event.data)
+      console.log('message received:', type, data) // add this
+
+      if (type === 'stdout') {
+        setOutputLines(prev => [...prev, { text: data, type: 'stdout' }])
+        // if output ends with a prompt like "enter a: " show input box
+        setWaitingForInput(true)
+      } else if (type === 'stderr') {
+        setOutputLines(prev => [...prev, { text: data, type: 'stderr' }])
+        setStatus('error')
+      } else if (type === 'exit') {
+        setStatus(code === 0 ? 'success' : 'error')
+        setWaitingForInput(false) // hide input box when done
+        setRunTime(Date.now() - startTime.current)
+      }
+    }
+
+    wsRef.current.onclose = () => console.log('ws disconnected')
+
+    return () => wsRef.current?.close()
+  }, [])
+
+  useEffect(() => {
+    if (waitingForInput && status === 'running') {
+      inputRef.current?.focus()
+    }
+  }, [waitingForInput, outputLines])
+
   const handleRun = async () => {
     if (!code.trim() || status === "running") return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     setStatus("running");
-    setOutputLines([{ text: "$ Executing...", type: "system" }]);
-    const start = Date.now();
-    try {
-      const response = await axios.post(`${import.meta.env.VITE_APP_URL}/submit`, { code, lang });
-      const elapsed = Date.now() - start;
-      setRunTime(elapsed);
-      
-      const out: string = response.data.output || "";
-      const lines: OutputLine[] = out.split("\n").filter(Boolean).map((t) => ({ text: t, type: "stdout" }));
-
-      if (lines.length === 0) lines.push({ text: "(no output)", type: "system" });
-      lines.push({ text: `✓ Finished in ${elapsed}ms`, type: "system" });
-      setOutputLines(lines);
-      setStatus("success");
-    } catch (err: any) {
-      const elapsed = Date.now() - start;
-      setRunTime(elapsed);
-      const msg = err.response?.data?.error || err.message || "Something went wrong";
-      setOutputLines([
-        { text: msg, type: "stderr" },
-        { text: `✗ Failed after ${elapsed}ms`, type: "system" },
-      ]);
-      setStatus("error");
-    }
+    // setOutputLines([{ text: "$ Executing...", type: "system" }]);
+    setOutputLines([])
+    startTime.current = Date.now()
+    wsRef.current.send(JSON.stringify({ type: 'run', code, lang }))
   };
+
+  const handleStdinSubmit = () => {
+    if (!inputValue.trim() || !wsRef.current) return
+
+    console.log('submit triggered, value:', inputValue, 'ws state:', wsRef.current?.readyState)
+
+    // show what user typed in the output panel
+    setOutputLines(prev => [...prev, { text: inputValue, type: 'stdin' }])
+
+    // send to server
+    wsRef.current.send(JSON.stringify({
+      type: 'stdin',
+      data: inputValue + '\n' // \n is important — simulates pressing enter
+    }))
+
+    setInputValue('')
+  }
 
   const handleClear = () => {
     setOutputLines([{ text: "// Output cleared", type: "system" }]);
@@ -131,9 +166,9 @@ export default function App() {
         <div style={s.topLeft}>
           <div style={s.brand}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path d="M8 6L3 12L8 18" stroke={cfg.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M16 6L21 12L16 18" stroke={cfg.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M14 4L10 20" stroke={cfg.color} strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M8 6L3 12L8 18" stroke={cfg.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M16 6L21 12L16 18" stroke={cfg.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M14 4L10 20" stroke={cfg.color} strokeWidth="1.5" strokeLinecap="round" />
             </svg>
             <span style={s.brandText}>CodeSubmit</span>
           </div>
@@ -161,8 +196,8 @@ export default function App() {
           </div>
           <button onClick={handleCopy} style={s.iconBtn} title="Copy code">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2"/>
-              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+              <rect x="9" y="9" width="13" height="13" rx="2" />
+              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
             </svg>
           </button>
           <button onClick={handleRun} disabled={status === "running"} style={{
@@ -172,9 +207,9 @@ export default function App() {
             cursor: status === "running" ? "not-allowed" : "pointer",
           }}>
             {status === "running" ? (
-              <><span style={{ width:13,height:13,border:`2px solid ${cfg.color}44`,borderTop:`2px solid ${cfg.color}`,borderRadius:"50%",display:"inline-block",animation:"spin .7s linear infinite" }} /> Running</>
+              <><span style={{ width: 13, height: 13, border: `2px solid ${cfg.color}44`, borderTop: `2px solid ${cfg.color}`, borderRadius: "50%", display: "inline-block", animation: "spin .7s linear infinite" }} /> Running</>
             ) : (
-              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run Code</>
+              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg> Run Code</>
             )}
           </button>
         </div>
@@ -186,11 +221,11 @@ export default function App() {
         <div style={{ ...s.pane, width: `${panelWidth}%` }}>
           <div style={s.paneBar}>
             <div style={s.paneTitle}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={cfg.color} strokeWidth="2" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={cfg.color} strokeWidth="2" strokeLinecap="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>
               <span>Editor</span>
             </div>
             <div style={s.trafficLights}>
-              {["#FF5F57","#FFBD2E","#28C840"].map(c => <div key={c} style={{ width:9,height:9,borderRadius:"50%",background:c }} />)}
+              {["#FF5F57", "#FFBD2E", "#28C840"].map(c => <div key={c} style={{ width: 9, height: 9, borderRadius: "50%", background: c }} />)}
             </div>
             <span style={s.fileName}>{`main${cfg.ext}`}</span>
           </div>
@@ -224,7 +259,7 @@ export default function App() {
                   inherit: true,
                   rules: [
                     { token: "comment", foreground: "3D4F6A", fontStyle: "italic" },
-                    { token: "keyword", foreground: cfg.color.replace("#","") },
+                    { token: "keyword", foreground: cfg.color.replace("#", "") },
                     { token: "string", foreground: "7EC8A0" },
                     { token: "number", foreground: "E9A96E" },
                   ],
@@ -249,7 +284,7 @@ export default function App() {
           <div style={{ ...s.dragLine, background: cfg.color }} />
           <div style={s.dragHandle}>
             <svg width="5" height="20" viewBox="0 0 5 20" fill="none">
-              {[2,9,16].map(y => <circle key={y} cx="2.5" cy={y} r="1.5" fill={cfg.color} opacity="0.5"/>)}
+              {[2, 9, 16].map(y => <circle key={y} cx="2.5" cy={y} r="1.5" fill={cfg.color} opacity="0.5" />)}
             </svg>
           </div>
         </div>
@@ -258,7 +293,7 @@ export default function App() {
         <div style={{ ...s.pane, flex: 1 }}>
           <div style={s.paneBar}>
             <div style={s.paneTitle}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={statusColor} strokeWidth="2" strokeLinecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={statusColor} strokeWidth="2" strokeLinecap="round"><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg>
               <span style={{ color: statusColor }}>Output</span>
             </div>
             <div style={s.paneRight}>
@@ -269,38 +304,86 @@ export default function App() {
           </div>
 
           <div style={s.outputWrap}>
-            {status === "running" ? (
-              <div style={s.runningCenter}>
-                <div style={{ ...s.ringPulse, borderColor: cfg.color, boxShadow: `0 0 40px ${cfg.glow}` }} />
-                <span style={{ color: cfg.color, fontSize: 12, letterSpacing: "0.08em", marginTop: 16 }}>EXECUTING</span>
+            <div style={s.outputScroll}>
+              <div style={s.promptRow}>
+                <span style={{ color: cfg.color }}>➜</span>
+                <span style={{ color: "#2D3748" }}>~</span>
+                <span style={{ color: "#374151" }}> ./{`main${cfg.ext}`}</span>
               </div>
-            ) : (
-              <div style={s.outputScroll}>
-                <div style={s.promptRow}>
-                  <span style={{ color: cfg.color }}>➜</span>
-                  <span style={{ color: "#2D3748" }}>~</span>
-                  <span style={{ color: "#374151" }}> ./{`main${cfg.ext}`}</span>
+
+              {outputLines.map((line, i) => (
+                <div key={i} style={{
+                  ...s.outLine,
+                  color: line.type === "stderr" ? "#F87171"
+                    : line.type === "stdin" ? cfg.color      // show user input in accent color
+                      : line.type === "system" ? "#2D3748"
+                        : "#A7F3C8",
+                  fontStyle: line.type === "system" ? "italic" : "normal",
+                }}>
+                  {line.type === "stderr" && <span style={{ marginRight: 4 }}>✗</span>}
+                  {line.type === "stdin" && <span style={{ marginRight: 4, opacity: 0.5 }}>{'>'}</span>}
+                  {line.text}
                 </div>
-                {outputLines.map((line, i) => (
-                  <div key={i} style={{
-                    ...s.outLine,
-                    color: line.type === "stderr" ? "#F87171" : line.type === "system" ? "#2D3748" : "#A7F3C8",
-                    fontStyle: line.type === "system" ? "italic" : "normal",
-                  }}>
-                    {line.type === "stderr" && <span style={{ marginRight: 4 }}>✗</span>}
-                    {line.text}
-                  </div>
-                ))}
-                {status !== ("running" as OutputStatus) && (
-                  <span style={{ display:"inline-block", width:7, height:14, background: status === "idle" ? cfg.color : statusColor, borderRadius:1, animation:"blink 1.2s step-end infinite", marginTop:4, opacity:0.7 }} />
-                )}
-              </div>
-            )}
+              ))}
+
+              {/* input box — shows when waiting for input during execution */}
+              {waitingForInput && status === "running" && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+                  <span style={{ color: cfg.color }}>{'>'}</span>
+                  <input
+                    ref={inputRef}
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        handleStdinSubmit()
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      background: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      color: '#D1D5DB',
+                      fontFamily: 'inherit',
+                      fontSize: 12,
+                    }}
+                    placeholder="type input and press enter..."
+                  />
+                </div>
+              )}
+
+              {/* show running indicator inline instead of fullscreen ring */}
+              {status === "running" && !waitingForInput && (
+                <span style={{
+                  display: 'inline-block',
+                  width: 7, height: 14,
+                  background: cfg.color,
+                  borderRadius: 1,
+                  animation: "blink 1.2s step-end infinite",
+                  marginTop: 4,
+                  opacity: 0.7
+                }} />
+              )}
+
+              {status !== "running" && (
+                <span style={{
+                  display: "inline-block",
+                  width: 7, height: 14,
+                  background: status === "idle" ? cfg.color : statusColor,
+                  borderRadius: 1,
+                  animation: "blink 1.2s step-end infinite",
+                  marginTop: 4,
+                  opacity: 0.7
+                }} />
+              )}
+            </div>
           </div>
 
           <div style={s.outFooter}>
             <span>{outputLines.filter(l => l.type === "stdout").length} lines output</span>
-            {runTime !== null && <span>{runTime < 1000 ? `${runTime}ms` : `${(runTime/1000).toFixed(2)}s`} elapsed</span>}
+            {runTime !== null && <span>{runTime < 1000 ? `${runTime}ms` : `${(runTime / 1000).toFixed(2)}s`} elapsed</span>}
           </div>
         </div>
       </div>
@@ -308,43 +391,43 @@ export default function App() {
   );
 }
 
-const s: Record<string,any> = {
-  root: { height:"100vh", display:"flex", flexDirection:"column", background:"#060A10", fontFamily:"'JetBrains Mono','Fira Code',monospace", overflow:"hidden", position:"relative" },
-  ambient: { position:"fixed", inset:0, pointerEvents:"none", zIndex:0, transition:"background 0.8s ease" },
-  topbar: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", height:50, borderBottom:"1px solid rgba(255,255,255,0.06)", background:"rgba(6,10,16,0.95)", backdropFilter:"blur(20px)", position:"relative", zIndex:10, flexShrink:0 },
-  topLeft: { display:"flex", alignItems:"center", gap:16 },
-  brand: { display:"flex", alignItems:"center", gap:8 },
-  brandText: { fontSize:14, fontWeight:700, color:"#D1D5DB", letterSpacing:"-0.3px" },
-  divBar: { width:1, height:20, background:"rgba(255,255,255,0.08)" },
-  langTabs: { display:"flex" },
-  langTab: { display:"flex", alignItems:"center", gap:6, padding:"0 14px", background:"transparent", border:"none", borderBottom:"2px solid", cursor:"pointer", fontSize:11, fontWeight:600, fontFamily:"inherit", letterSpacing:"0.03em", transition:"all 0.2s", height:50, marginBottom:-1 },
-  langDot: { width:6, height:6, borderRadius:"50%", transition:"background 0.2s" },
-  tabExt: { fontSize:9, opacity:0.35 },
-  topRight: { display:"flex", alignItems:"center", gap:8 },
-  statusPill: { display:"flex", alignItems:"center", gap:5, padding:"4px 10px", borderRadius:20, border:"1px solid", fontSize:10, fontWeight:600, letterSpacing:"0.05em", background:"rgba(255,255,255,0.02)" },
-  statusDot: { width:5, height:5, borderRadius:"50%" },
-  runTime: { opacity:0.4, marginLeft:4, fontSize:9 },
-  iconBtn: { display:"flex", alignItems:"center", justifyContent:"center", width:30, height:30, borderRadius:7, border:"1px solid rgba(255,255,255,0.07)", background:"rgba(255,255,255,0.03)", color:"#4B5563", cursor:"pointer", transition:"all 0.2s" },
-  runBtn: { display:"flex", alignItems:"center", gap:7, padding:"7px 15px", borderRadius:8, border:"none", color:"#fff", fontSize:11, fontWeight:700, fontFamily:"inherit", letterSpacing:"0.05em", transition:"all 0.25s" },
-  workspace: { display:"flex", flex:1, overflow:"hidden", position:"relative", zIndex:1 },
-  pane: { display:"flex", flexDirection:"column", overflow:"hidden", minWidth:180 },
-  paneBar: { display:"flex", alignItems:"center", gap:8, padding:"0 14px", height:36, borderBottom:"1px solid rgba(255,255,255,0.05)", background:"rgba(255,255,255,0.015)", flexShrink:0 },
-  paneTitle: { display:"flex", alignItems:"center", gap:5, fontSize:10, fontWeight:600, color:"#374151", letterSpacing:"0.07em", textTransform:"uppercase" },
-  trafficLights: { display:"flex", gap:5, marginLeft:"auto" },
-  fileName: { fontSize:9, color:"#1F2937", marginLeft:2 },
-  paneRight: { marginLeft:"auto" },
-  clearBtn: { fontSize:9, color:"#2D3748", background:"transparent", border:"none", cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.05em", padding:"2px 6px", borderRadius:3 },
-  editorWrap: { flex:1, overflow:"hidden", background:"#070B12" },
-  dragDiv: { width:10, cursor:"col-resize", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", flexShrink:0, position:"relative", zIndex:5 },
-  dragLine: { position:"absolute", top:0, bottom:0, width:1, opacity:0.12, left:"50%", transform:"translateX(-50%)" },
-  dragHandle: { width:16, height:28, background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", position:"relative", zIndex:1 },
-  outputWrap: { flex:1, overflow:"hidden", background:"#050810", position:"relative" },
-  outputScroll: { height:"100%", overflowY:"auto", padding:"14px 18px", boxSizing:"border-box" as const },
-  promptRow: { display:"flex", gap:6, fontSize:11, marginBottom:10, opacity:0.6 },
-  outLine: { fontSize:12, lineHeight:"19px", fontFamily:"inherit", whiteSpace:"pre-wrap" as const, wordBreak:"break-word" as const },
-  runningCenter: { position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" },
-  ringPulse: { width:44, height:44, borderRadius:"50%", border:"1.5px solid", animation:"ping 1s ease-out infinite" },
-  outFooter: { display:"flex", justifyContent:"space-between", padding:"4px 14px", borderTop:"1px solid rgba(255,255,255,0.04)", fontSize:9, color:"#1F2937", letterSpacing:"0.05em", background:"rgba(255,255,255,0.01)", flexShrink:0 },
+const s: Record<string, any> = {
+  root: { height: "100vh", display: "flex", flexDirection: "column", background: "#060A10", fontFamily: "'JetBrains Mono','Fira Code',monospace", overflow: "hidden", position: "relative" },
+  ambient: { position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0, transition: "background 0.8s ease" },
+  topbar: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", height: 50, borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(6,10,16,0.95)", backdropFilter: "blur(20px)", position: "relative", zIndex: 10, flexShrink: 0 },
+  topLeft: { display: "flex", alignItems: "center", gap: 16 },
+  brand: { display: "flex", alignItems: "center", gap: 8 },
+  brandText: { fontSize: 14, fontWeight: 700, color: "#D1D5DB", letterSpacing: "-0.3px" },
+  divBar: { width: 1, height: 20, background: "rgba(255,255,255,0.08)" },
+  langTabs: { display: "flex" },
+  langTab: { display: "flex", alignItems: "center", gap: 6, padding: "0 14px", background: "transparent", border: "none", borderBottom: "2px solid", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "inherit", letterSpacing: "0.03em", transition: "all 0.2s", height: 50, marginBottom: -1 },
+  langDot: { width: 6, height: 6, borderRadius: "50%", transition: "background 0.2s" },
+  tabExt: { fontSize: 9, opacity: 0.35 },
+  topRight: { display: "flex", alignItems: "center", gap: 8 },
+  statusPill: { display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 20, border: "1px solid", fontSize: 10, fontWeight: 600, letterSpacing: "0.05em", background: "rgba(255,255,255,0.02)" },
+  statusDot: { width: 5, height: 5, borderRadius: "50%" },
+  runTime: { opacity: 0.4, marginLeft: 4, fontSize: 9 },
+  iconBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.07)", background: "rgba(255,255,255,0.03)", color: "#4B5563", cursor: "pointer", transition: "all 0.2s" },
+  runBtn: { display: "flex", alignItems: "center", gap: 7, padding: "7px 15px", borderRadius: 8, border: "none", color: "#fff", fontSize: 11, fontWeight: 700, fontFamily: "inherit", letterSpacing: "0.05em", transition: "all 0.25s" },
+  workspace: { display: "flex", flex: 1, overflow: "hidden", position: "relative", zIndex: 1 },
+  pane: { display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 180 },
+  paneBar: { display: "flex", alignItems: "center", gap: 8, padding: "0 14px", height: 36, borderBottom: "1px solid rgba(255,255,255,0.05)", background: "rgba(255,255,255,0.015)", flexShrink: 0 },
+  paneTitle: { display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 600, color: "#374151", letterSpacing: "0.07em", textTransform: "uppercase" },
+  trafficLights: { display: "flex", gap: 5, marginLeft: "auto" },
+  fileName: { fontSize: 9, color: "#1F2937", marginLeft: 2 },
+  paneRight: { marginLeft: "auto" },
+  clearBtn: { fontSize: 9, color: "#2D3748", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em", padding: "2px 6px", borderRadius: 3 },
+  editorWrap: { flex: 1, overflow: "hidden", background: "#070B12" },
+  dragDiv: { width: 10, cursor: "col-resize", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0, position: "relative", zIndex: 5 },
+  dragLine: { position: "absolute", top: 0, bottom: 0, width: 1, opacity: 0.12, left: "50%", transform: "translateX(-50%)" },
+  dragHandle: { width: 16, height: 28, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", zIndex: 1 },
+  outputWrap: { flex: 1, overflow: "hidden", background: "#050810", position: "relative" },
+  outputScroll: { height: "100%", overflowY: "auto", padding: "14px 18px", boxSizing: "border-box" as const },
+  promptRow: { display: "flex", gap: 6, fontSize: 11, marginBottom: 10, opacity: 0.6 },
+  outLine: { fontSize: 12, lineHeight: "19px", fontFamily: "inherit", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const },
+  runningCenter: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
+  ringPulse: { width: 44, height: 44, borderRadius: "50%", border: "1.5px solid", animation: "ping 1s ease-out infinite" },
+  outFooter: { display: "flex", justifyContent: "space-between", padding: "4px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", fontSize: 9, color: "#1F2937", letterSpacing: "0.05em", background: "rgba(255,255,255,0.01)", flexShrink: 0 },
 };
 
 if (typeof document !== "undefined") {

@@ -1,0 +1,4 @@
+docker/**/*.tar
+*.log
+tmp/
+temp/

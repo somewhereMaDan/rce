@@ -1,8 +1,7 @@
+const WebSocket = require('ws')
 const express = require('express')
-const dotenv = require('dotenv')
 const cors = require('cors')
 const http = require('http')
-const { WebSocket } = require('ws')
 const { executePython, executeJava, executecpp } = require('./src/services/executor')
 
 const app = express()
@@ -16,44 +15,53 @@ app.get('/', (req, res) => {
     res.send('Welcome to a terrible RCE');
 });
 
-// wss.on('connection', (ws) => {
-//     let currentProcess = null
-//     console.log("client connected");
+wss.on('connection', (ws) => {
+    let currentProcess = null
+    console.log("client connected..!");
 
-//     ws.on('message', async (message) => {
-//         const { code, lang, stdin = '' } = JSON.parse(message)
 
-//         if (currentProcess) {
-//             currentProcess.kill()
-//             currentProcess = null
-//         }
+    ws.on('message', (message) => {
+        const { type, data, code, lang } = JSON.parse(message)
 
-//         try {
-//             if (lang === 'python') {
-//                 currentProcess = executePython(code, stdin, ws)
-//             } else if (lang === 'java') {
-//                 currentProcess = executeJava(code, stdin, ws)
-//             } else if (lang === 'cpp') {
-//                 currentProcess = executecpp(code, stdin, ws)
-//             }
-//         } catch (err) {
-//             ws.send(JSON.stringify({ type: 'stderr', data: 'Internal server error' }))
-//         }
+        // user clicked Run — start execution
+        if (type === 'run') {
+            if (currentProcess) {
+                currentProcess.kill()
+                currentProcess = null
+            }
 
-//         ws.on('close', () => {
-//             if (currentProcess) {
-//                 currentProcess.kill()
-//                 currentProcess = null
-//             }
-//             console.log("client disconnected");
-//         })
-//     })
-// })
+            if (lang === 'python') {
+                currentProcess = executePython(code, ws)
+            } else if (lang === 'java') {
+                currentProcess = executeJava(code, ws)
+            } else if (lang === 'cpp') {
+                currentProcess = executecpp(code, ws)
+            }            
+        }
 
-require('./src/routes/execute.routes')(app)
+        // user typed input and pressed enter
+        if (type === 'stdin') {
+            console.log('controls available:', !!currentProcess?.controls)
+            if (currentProcess) {
+                currentProcess.stdin.write(data) // pipe it directly to running process, it's writing input to the process 
+                // user sent input, program is running again not waiting
+                currentProcess.controls?.setWaitingForInput(false)
+                currentProcess.controls?.resetInputTimer()
+            }
+        }
+    })
+
+    ws.on('close', () => {
+        if (currentProcess) {
+            currentProcess.kill()
+            currentProcess = null
+        }
+    })
+})
+
 
 const port = process.env.PORT || 5000;
 
-app.listen(port, () => {
-    console.log(`Unfortunately listening on port http://localhost:${port}`)
-});
+server.listen(port, () => {
+    console.log(`Listening on http://localhost:${port}`)
+})

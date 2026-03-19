@@ -20,3 +20,10 @@ python /code/test.py — the command to run inside the container
 
 python = the python interpreter inside the container
 /code/test.py = the file to execute, which exists because of the volume mount above
+
+**** TO RUN
+~/OneDrive/Desktop/work/rce (main)
+$ alias rce-start='bash build-images.sh && docker compose up'
+
+~/OneDrive/Desktop/work/rce (main)
+$ alias rce-down='docker compose down'
