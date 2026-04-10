@@ -15,13 +15,13 @@ ${PWD} = your current local folder (docker/python)
 : separates them — meaning "map my local folder TO container's /code"
 So test.py sitting in docker/python becomes accessible at /code/test.py inside the container
 
-python-runner — the image to use (you built this earlier)
+python-runner — the image to use
 python /code/test.py — the command to run inside the container
 
 python = the python interpreter inside the container
 /code/test.py = the file to execute, which exists because of the volume mount above
 
-**** TO RUN, I've created alias in git bash
+**** TO RUN, I had created alias in git bash
 ~/OneDrive/Desktop/work/rce (main)
 $ alias rce-start='bash build-images.sh && docker compose up'
 
@@ -41,7 +41,7 @@ $ alias rce-down='docker compose down'
 ****Q. Why — the Docker socket?
 
 - /var/run/docker.sock:/var/run/docker.sock
-This gives rce-server a direct line to the host Docker daemon. So when your server calls:
+This gives rce-server a direct line to the host Docker daemon. So when server calls:
 spawn('docker', ['run', '--rm', '-i', ...])
 ```
 
