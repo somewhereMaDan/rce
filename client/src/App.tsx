@@ -73,7 +73,7 @@ export default function App() {
     wsRef.current = new WebSocket('ws://localhost:5000')
 
     wsRef.current.onmessage = (event) => {
-      const { type, data, code } = JSON.parse(event.data)
+      const { type, data, code, cpuTime } = JSON.parse(event.data)
       console.log('message received:', type, data) // add this
 
       if (type === 'stdout') {
@@ -86,7 +86,8 @@ export default function App() {
       } else if (type === 'exit') {
         setStatus(code === 0 ? 'success' : 'error')
         setWaitingForInput(false) // hide input box when done
-        setRunTime(Date.now() - startTime.current)
+        // setRunTime(Date.now() - startTime.current)
+        setRunTime(cpuTime);
       }
     }
 

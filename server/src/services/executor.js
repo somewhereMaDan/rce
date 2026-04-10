@@ -5,25 +5,45 @@ const path = require('path')
 const { v4: uuidv4 } = require('uuid')
 
 function executePython(code, ws) {
+    // const jobId = uuidv4()
+    // const filename = `${jobId}.py`
+    // const filePath = path.join(__dirname, '../../temp', filename)
+    // const normalizedPath = path.join(__dirname, '../../temp').split(path.sep).join('/')
+
+    // fs.mkdirSync(path.join(__dirname, '../../temp'), { recursive: true })
+    // fs.writeFileSync(filePath, code)
+
+    // console.log('normalizedPath:', normalizedPath)
+    // console.log('filePath:', filePath)
+    // console.log('file exists:', fs.existsSync(filePath))
+
+
+    // const child = spawn('docker', [
+    //     'run', '--rm', '-i',
+    //     '--memory=256m',
+    //     '--cpus=0.5',
+    //     '--network', 'none',
+    //     '-v', `${normalizedPath}:/code`,
+    //     'python-runner',
+    //     'python', '-u', `/code/${filename}`
+    // ])
     const jobId = uuidv4()
     const filename = `${jobId}.py`
-    const filePath = path.join(__dirname, '../../temp', filename)
-    const normalizedPath = path.join(__dirname, '../../temp').split(path.sep).join('/')
+    const containerTempDir = path.join(__dirname, '../../temp') // /app/temp  (inside container)
+    const filePath = path.join(containerTempDir, filename) // /app/temp/1087c98d-....py  (where file is written inside container)
+    const hostTempDir = process.env.HOST_TEMP_PATH || containerTempDir.split(path.sep).join('/')
+    // if HOST_TEMP_PATH is set → /c/Users/madan/OneDrive/Desktop/work/rce/server/temp  (host path for -v flag)
+    // if not set (running locally) → /app/temp (falls back to containerTempDir, works fine outside Docker)
 
-    console.log('normalizedPath:', normalizedPath)
-    console.log('filePath:', filePath)
-    console.log('file exists:', fs.existsSync(filePath))
-
-    fs.mkdirSync(path.join(__dirname, '../../temp'), { recursive: true })
+    fs.mkdirSync(containerTempDir, { recursive: true })
     fs.writeFileSync(filePath, code)
-
 
     const child = spawn('docker', [
         'run', '--rm', '-i',
         '--memory=256m',
         '--cpus=0.5',
         '--network', 'none',
-        '-v', `${normalizedPath}:/code`,
+        '-v', `${hostTempDir}:/code`,   // ← host path for daemon
         'python-runner',
         'python', '-u', `/code/${filename}`
     ])
@@ -47,7 +67,7 @@ function executePython(code, ws) {
     return child
 }
 
-function executeJava(code, stdin = '', ws) {
+function executeJava(code, ws) {
     const jobId = uuidv4()
     const filename = 'Main.java'
     const jobDir = path.join(__dirname, '../../temp', jobId)
@@ -71,13 +91,13 @@ function executeJava(code, stdin = '', ws) {
         fs.rmSync(jobDir, { recursive: true, force: true })
     })
 
-    if (stdin) child.stdin.write(stdin)
-    child.stdin.end()
+    // if (stdin) child.stdin.write(stdin)
+    // child.stdin.end()
 
     return child
 }
 
-function executeCpp(code, stdin = '', ws) {
+function executeCpp(code, ws) {
     const jobId = uuidv4()
     const filename = 'main.cpp'
     const jobDir = path.join(__dirname, '../../temp', jobId)
@@ -101,8 +121,8 @@ function executeCpp(code, stdin = '', ws) {
         fs.rmSync(jobDir, { recursive: true, force: true })
     })
 
-    if (stdin) child.stdin.write(stdin)
-    child.stdin.end()
+    // if (stdin) child.stdin.write(stdin)
+    // child.stdin.end()
 
     return child
 }
@@ -177,6 +197,7 @@ function attachStreams(child, ws, cleanup) {
         console.log('stdout chunk:', JSON.stringify(chunk.toString()))
         waitingForInput = true
         cpuTime += Date.now() - cpuStart
+        cpuStart = Date.now()  
         resetInputTimer()
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'stdout', data: chunk.toString() }))
@@ -193,7 +214,7 @@ function attachStreams(child, ws, cleanup) {
         clearTimeout(inputTimer)
         clearInterval(cpuCheckInterval)
         if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'exit', code }))
+            ws.send(JSON.stringify({ type: 'exit', code, cpuTime }))
         }
         cleanup() // delete temp files
     })

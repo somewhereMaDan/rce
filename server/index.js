@@ -2,7 +2,7 @@ const WebSocket = require('ws')
 const express = require('express')
 const cors = require('cors')
 const http = require('http')
-const { executePython, executeJava, executecpp } = require('./src/services/executor')
+const { executePython, executeJava, executeCpp } = require('./src/services/executor')
 
 const app = express()
 const server = http.createServer(app) // share same port as backend server
@@ -35,7 +35,7 @@ wss.on('connection', (ws) => {
             } else if (lang === 'java') {
                 currentProcess = executeJava(code, ws)
             } else if (lang === 'cpp') {
-                currentProcess = executecpp(code, ws)
+                currentProcess = executeCpp(code, ws)
             }            
         }
 
